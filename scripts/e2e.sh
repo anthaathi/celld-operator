@@ -50,7 +50,7 @@ kubectl apply -f "$ROOT/poc/kind/store.yaml"
   --replicas 1 \
   -n celld-poc \
   --apply >/dev/null
-"$PLUGIN" deploy "$ROOT/poc/worker" --fleet e2e -n celld-poc
+"$PLUGIN" deploy "$ROOT/poc/worker" --fleet e2e -n celld-poc --deployer-image "$DEPLOYER_IMAGE"
 
 # The fleet is Ready when the celld node has adopted the deployment.
 for _ in $(seq 1 30); do
