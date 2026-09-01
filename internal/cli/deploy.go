@@ -29,9 +29,10 @@ import (
 )
 
 const (
-	// defaultDeployerImage carries celld + esbuild. Build it with
-	// `make deployer-image`.
-	defaultDeployerImage = "celld-deployer:latest"
+	// defaultDeployerImage carries celld + esbuild. Published by the release
+	// workflow to GHCR; override with --deployer-image for local builds
+	// (`make deployer-image` tags celld-deployer:latest).
+	defaultDeployerImage = "ghcr.io/anthaathi/celld-operator-deployer:latest"
 	deployContainerName  = "deploy"
 	deploySourceDir      = "/app"
 )

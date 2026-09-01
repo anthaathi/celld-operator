@@ -6,6 +6,7 @@ import (
 
 	platformv1alpha1 "github.com/anthaathi/celld-deploy/api/v1alpha1"
 	"github.com/anthaathi/celld-deploy/internal/controller"
+	"github.com/anthaathi/celld-deploy/internal/version"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -30,6 +31,7 @@ func main() {
 	logOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&logOptions)))
+	ctrl.Log.Info("starting celld-operator", "version", version.Version)
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))

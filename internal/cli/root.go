@@ -8,6 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is stamped at build time with -ldflags "-X github.com/anthaathi/celld-deploy/internal/cli.version=...".
+var version = "dev"
+
 // NewRootCommand builds the plugin's command tree. Context, namespace, and
 // kubeconfig come from the standard client-go loading rules, so kubectl's
 // --context / -n flags work when invoked as `kubectl celld ...`.
@@ -26,6 +29,7 @@ Subcommands:
   status   Show fleet health, rollout, routes, and recent events
   init     Generate (and optionally apply) a CelldFleet manifest
   logs     Stream logs from a fleet's celld nodes`,
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

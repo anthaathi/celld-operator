@@ -211,6 +211,19 @@ The `kubectl-celld` binary is a kubectl plugin for the full fleet workflow —
 deploy Workers, inspect fleets, and bootstrap new ones — without raw
 manifests or `kubectl` invocations:
 
+Install the latest release binary (linux/macOS, amd64/arm64 — checksums on
+the [releases page](https://github.com/anthaathi/celld-operator/releases)):
+
+```bash
+VERSION=v0.1.0  # adjust
+OS=$(uname -s | tr '[:upper:]' '[:lower:]'); ARCH=$(uname -m)
+curl -fsSLO "https://github.com/anthaathi/celld-operator/releases/download/${VERSION}/kubectl-celld_${OS}_${ARCH}"
+chmod +x kubectl-celld_${OS}_${ARCH} && sudo mv kubectl-celld_${OS}_${ARCH} /usr/local/bin/kubectl-celld
+kubectl celld --version
+```
+
+Or build from source:
+
 ```bash
 make plugin
 sudo cp bin/kubectl-celld /usr/local/bin/   # or anywhere on PATH
@@ -260,11 +273,15 @@ kubectl celld init demo-app \
 The plugin uses your kubeconfig credentials and needs read access to
 `CelldFleet`/`CelldObjectStore` plus Job/Pod create, `pods/exec`, and
 `pods/log`. The stream-mode deployer image (celld + esbuild, no source baked
-in) is built from the root `deployer.Dockerfile`:
+in) is published per release to GHCR and used by default:
 
-```bash
-make deployer-image
-```
+- `ghcr.io/anthaathi/celld-operator:<tag>` — the operator
+- `ghcr.io/anthaathi/celld-operator-deployer:<tag>` — the stream-mode deployer
+
+Override with `--deployer-image` (for local builds from the root
+`deployer.Dockerfile`, `make deployer-image` tags `celld-deployer:latest`).
+Each release also ships a versioned `install-operator.yaml.example` with the
+operator image pinned to the release tag.
 
 They may share the same physical S3 bucket, but each prefix is a separate
 fleet. celld named service bindings can co-host internal scripts, but native
@@ -341,6 +358,27 @@ docker build -t celld-operator:poc .
 
 Generated files are checked into `api/v1alpha1/zz_generated.deepcopy.go`,
 `config/crd/bases`, and `config/rbac/role.yaml`.
+
+## Release process
+
+Releases are automated with [Release Please](https://github.com/googleapis/release-please):
+
+1. Merge feature work to `master` using [Conventional Commits](https://www.conventionalcommits.org)
+   (`feat:`, `fix:`, `docs:`, `chore:`, ...). CI (unit tests, manifest drift
+   check, E2E on kind) must pass.
+2. Release Please maintains a `chore(master): release X.Y.Z` PR that bumps
+   `VERSION` and `.release-please-manifest.json` from the commit history.
+3. Merge that PR → the `vX.Y.Z` tag is created → the [Release workflow](.github/workflows/release.yml)
+   publishes:
+   - `kubectl-celld` binaries (linux/darwin × amd64/arm64) + `.sha256` sums
+   - `ghcr.io/anthaathi/celld-operator:{tag,latest}`
+   - `ghcr.io/anthaathi/celld-operator-deployer:{tag,latest}`
+   - a versioned `install-operator.yaml.example`
+   - the GitHub Release with generated notes
+
+Development iteration against the live kind cluster remains `make poc-up` /
+`poc-deploy` / `poc-down`, which build local images (env overrides
+`OPERATOR_IMAGE` / `DEPLOYER_IMAGE` to pin published tags instead).
 
 ## POC limitations
 

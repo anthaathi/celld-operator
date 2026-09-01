@@ -1,17 +1,24 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: all build test vet verify manifests install uninstall plugin deployer-image poc-up poc-deploy poc-down
+VERSION ?= $(shell cat VERSION 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X github.com/anthaathi/celld-deploy/internal/cli.version=$(VERSION)
+
+.PHONY: all build test vet verify manifests install uninstall plugin deployer-image poc-up poc-deploy poc-down release-snapshot
 
 all: verify
 
 build:
-	go build -o bin/celld-operator ./cmd
+	go build -ldflags "$(LDFLAGS) -X github.com/anthaathi/celld-deploy/internal/version.Version=$(VERSION)" -o bin/celld-operator ./cmd
 
 plugin:
-	go build -o bin/kubectl-celld ./cmd/kubectl-celld
+	go build -ldflags "$(LDFLAGS)" -o bin/kubectl-celld ./cmd/kubectl-celld
 
 deployer-image:
 	docker build -f deployer.Dockerfile -t celld-deployer:latest .
+
+release-snapshot:
+	docker build -t ghcr.io/anthaathi/celld-operator:dev . \
+	  && docker build -f deployer.Dockerfile -t ghcr.io/anthaathi/celld-operator-deployer:dev .
 
 test:
 	go test ./...
