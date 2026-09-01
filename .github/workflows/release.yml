@@ -110,8 +110,18 @@ jobs:
           grep -q "image: " dist/install-operator.yaml.example
 
       - name: Attach assets to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          files: |
-            dist/*
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Find the existing release for this tag and upload assets into it.
+          RELEASE_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')
+          echo "attaching to release ${RELEASE_ID} (${TAG})"
+          for f in dist/*; do
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$(basename "$f")" \
+              -H "Content-Type: application/octet-stream" \
+              --input "$f" >/dev/null
+          done
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --jq '.[].name'
