@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: celld-poc
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-root
+  namespace: celld-poc
+type: Opaque
+stringData:
+  # Fixed credentials are intentional for this disposable local Kind POC only.
+  MINIO_ROOT_USER: minioadmin
+  MINIO_ROOT_PASSWORD: minioadmin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: celld-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+        args: ["server", "/data", "--console-address", ":9001"]
+        envFrom:
+        - secretRef:
+            name: minio-root
+        ports:
+        - name: api
+          containerPort: 9000
+        - name: console
+          containerPort: 9001
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: api
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: celld-poc
+spec:
+  selector:
+    app: minio
+  ports:
+  - name: api
+    port: 9000
+    targetPort: api
+  - name: console
+    port: 9001
+    targetPort: console
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-celld-bucket
+  namespace: celld-poc
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: mc
+        image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+        envFrom:
+        - secretRef:
+            name: minio-root
+        command: ["/bin/sh", "-ec"]
+        args:
+        - |
+          until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do sleep 2; done
+          mc mb --ignore-existing local/celld
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: celld-s3-credentials
+  namespace: celld-poc
+type: Opaque
+stringData:
+  # Same disposable local-only credentials used by the MinIO deployment above.
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin

@@ -1,0 +1,5 @@
+{
+  "name": "celld-poc-worker",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01"
+}

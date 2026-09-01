@@ -1,0 +1,15 @@
+apiVersion: platform.celld.dev/v1alpha1
+kind: CelldFleet
+metadata:
+  name: example-r2
+  namespace: default
+spec:
+  replicas: 2
+  objectStorage:
+    bucket: s3://my-r2-bucket/example
+    endpoint: https://ACCOUNT_ID.r2.cloudflarestorage.com
+    region: auto
+    credentialsSecretRef:
+      name: celld-r2-credentials
+  localStorage:
+    type: Ephemeral

@@ -1,0 +1,21 @@
+apiVersion: platform.celld.dev/v1alpha1
+kind: CelldFleet
+metadata:
+  name: example
+  namespace: default
+spec:
+  replicas: 2
+  objectStorage:
+    bucket: s3://my-celld-bucket/example
+    region: us-east-1
+    credentialsSecretRef:
+      name: celld-s3-credentials
+  localStorage:
+    type: Persistent
+    size: 10Gi
+  service:
+    type: LoadBalancer
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi

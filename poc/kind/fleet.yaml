@@ -1,0 +1,25 @@
+apiVersion: platform.celld.dev/v1alpha1
+kind: CelldFleet
+metadata:
+  name: local
+  namespace: celld-poc
+spec:
+  replicas: 1
+  image: ghcr.io/denoland/celld:v0.4.0
+  objectStorage:
+    bucket: s3://celld/local-poc
+    endpoint: http://minio.celld-poc.svc:9000
+    region: us-east-1
+    allowHTTP: true
+    credentialsSecretRef:
+      name: celld-s3-credentials
+  localStorage:
+    type: Ephemeral
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
