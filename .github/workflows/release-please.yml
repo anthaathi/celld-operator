@@ -20,3 +20,16 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # release-please pushes the release tag with GITHUB_TOKEN, whose events
+  # never trigger other workflows — so build the release assets here.
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: write
+      packages: write
+    secrets: inherit

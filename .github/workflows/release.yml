@@ -1,9 +1,26 @@
 name: Release
 
+# Reusable release builder: publishes plugin binaries and GHCR images for a
+# given tag and attaches the assets to the GitHub Release.
+#
+# Called automatically by release-please.yml when a release is cut (the tag
+# is pushed by GITHUB_TOKEN, which cannot trigger workflows itself), and also
+# runnable manually or on a direct tag push.
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v1.0.0)"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v1.0.0)"
+        required: true
+        type: string
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,23 +34,29 @@ jobs:
     name: Build and publish release assets
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve tag
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          case "$TAG" in
+            v*) VERSION="${TAG#v}" ;;
+            *)  VERSION="$TAG" ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Derive metadata
-        id: meta
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=0.0.0-dev.$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-            echo "tag=dev" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -82,16 +105,13 @@ jobs:
       - name: Generate versioned install manifest
         run: |
           VERSION="${{ steps.meta.outputs.tag }}"
-          mkdir -p dist
           sed "s|image: celld-operator:poc|image: ${REGISTRY}/${GITHUB_REPOSITORY}:${VERSION}|" \
             config/manager/manager.yaml > dist/install-operator.yaml.example
-          # Also verify the operator image is digest-pinnable in the manifest
           grep -q "image: " dist/install-operator.yaml.example
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Attach assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ steps.meta.outputs.tag }}
           files: |
             dist/*
