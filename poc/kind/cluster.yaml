@@ -1,0 +1,14 @@
+# Kind cluster config for the celld POC.
+# Maps host ports 80/443 to the ingress controller so the Ingress
+# created by spec.ingress is reachable at http://local.celld.dev.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - listenAddress: "127.0.0.1"
+    hostPort: 80
+    containerPort: 80
+  - listenAddress: "127.0.0.1"
+    hostPort: 443
+    containerPort: 443

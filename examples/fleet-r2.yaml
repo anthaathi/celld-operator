@@ -13,3 +13,8 @@ spec:
       name: celld-r2-credentials
   localStorage:
     type: Ephemeral
+  ingress:
+    hostname: example.celld.dev
+    gatewayRefs:
+    - name: external
+      namespace: gateway-system

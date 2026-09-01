@@ -14,7 +14,15 @@ spec:
     type: Persistent
     size: 10Gi
   service:
-    type: LoadBalancer
+    type: ClusterIP
+  ingress:
+    hostname: example.celld.dev
+    ingressClass: nginx
+    # Optional subpath mounting: /api/hello reaches the Worker as /hello.
+    path: /api
+    stripPrefix: true
+    tls:
+      clusterIssuer: letsencrypt-prod
   resources:
     requests:
       cpu: 250m

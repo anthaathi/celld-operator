@@ -1,0 +1,164 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+
+	platformv1alpha1 "github.com/anthaathi/celld-deploy/api/v1alpha1"
+	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
+)
+
+type initOptions struct {
+	namespace     string
+	replicas      int32
+	bucket        string
+	store         string
+	endpoint      string
+	region        string
+	secret        string
+	allowHTTP     bool
+	hostname      string
+	path          string
+	stripPrefix   bool
+	ingressClass  string
+	gateway       string
+	gatewayNS     string
+	clusterIssuer string
+	tlsSecret     string
+	apply         bool
+}
+
+func newInitCommand() *cobra.Command {
+	opts := initOptions{}
+	cmd := &cobra.Command{
+		Use:   "init <name>",
+		Short: "Generate (and optionally apply) a CelldFleet manifest",
+		Long: `Generate a CelldFleet manifest from flags, print it as YAML, and optionally
+apply it with --apply.
+
+Object storage can reference a shared CelldObjectStore (--store), which is the
+recommended pattern, or inline the connection (--endpoint, --region, --secret).
+A bucket is always required; each fleet owns one prefix.
+
+Exposure is a Knative-style one-liner: --hostname plus either --ingress-class
+or --gateway creates the route automatically.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInit(cmd.Context(), args[0], opts)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVarP(&opts.namespace, "namespace", "n", "", "fleet namespace (defaults to the current context namespace)")
+	flags.Int32Var(&opts.replicas, "replicas", 1, "celld node count")
+	flags.StringVar(&opts.bucket, "bucket", "", "s3:// bucket prefix for this fleet (required)")
+	flags.StringVar(&opts.store, "store", "", "CelldObjectStore name providing endpoint/region/credentials")
+	flags.StringVar(&opts.endpoint, "endpoint", "", "inline S3-compatible endpoint (mutually exclusive with --store)")
+	flags.StringVar(&opts.region, "region", "", "inline S3 region (defaults to us-east-1)")
+	flags.StringVar(&opts.secret, "secret", "", "inline credentials Secret name (mutually exclusive with --store)")
+	flags.BoolVar(&opts.allowHTTP, "allow-http", false, "permit a plain-HTTP object-store endpoint")
+	flags.StringVar(&opts.hostname, "hostname", "", "public hostname for automatic ingress/route creation")
+	flags.StringVar(&opts.path, "path", "/", "path prefix mounted for this fleet")
+	flags.BoolVar(&opts.stripPrefix, "strip-prefix", false, "strip the path prefix before the Worker sees the request")
+	flags.StringVar(&opts.ingressClass, "ingress-class", "", "create a classic Ingress with this class (e.g. nginx)")
+	flags.StringVar(&opts.gateway, "gateway", "", "attach an HTTPRoute to this Gateway name")
+	flags.StringVar(&opts.gatewayNS, "gateway-namespace", "", "namespace of the Gateway (defaults to the fleet namespace)")
+	flags.StringVar(&opts.clusterIssuer, "cluster-issuer", "", "request TLS certificates from this cert-manager ClusterIssuer")
+	flags.StringVar(&opts.tlsSecret, "tls-secret", "", "use an existing TLS Secret for HTTPS")
+	flags.BoolVar(&opts.apply, "apply", false, "apply the manifest to the cluster instead of only printing it")
+	_ = cmd.MarkFlagRequired("bucket")
+	return cmd
+}
+
+func runInit(ctx context.Context, name string, opts initOptions) error {
+	if opts.store != "" && (opts.endpoint != "" || opts.secret != "" || opts.region != "") {
+		return fmt.Errorf("--store cannot be combined with --endpoint, --region, or --secret")
+	}
+	if opts.ingressClass != "" && opts.gateway != "" {
+		return fmt.Errorf("--ingress-class and --gateway are mutually exclusive")
+	}
+	if opts.hostname == "" && (opts.ingressClass != "" || opts.gateway != "" || opts.clusterIssuer != "" || opts.tlsSecret != "") {
+		return fmt.Errorf("--hostname is required when configuring exposure or TLS")
+	}
+	if opts.clusterIssuer != "" && opts.tlsSecret != "" {
+		return fmt.Errorf("--cluster-issuer and --tls-secret are mutually exclusive")
+	}
+	namespace := opts.namespace
+	if namespace == "" {
+		namespace = currentNamespace()
+	}
+
+	fleet := &platformv1alpha1.CelldFleet{
+		TypeMeta: metav1.TypeMeta{APIVersion: platformv1alpha1.GroupVersion.String(), Kind: "CelldFleet"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{"app.kubernetes.io/name": "celld", "app.kubernetes.io/managed-by": "kubectl-celld"},
+		},
+		Spec: platformv1alpha1.CelldFleetSpec{
+			Replicas:      &opts.replicas,
+			ObjectStorage: platformv1alpha1.ObjectStorageSpec{Bucket: opts.bucket},
+		},
+	}
+	if opts.store != "" {
+		fleet.Spec.StoreRef = &corev1.LocalObjectReference{Name: opts.store}
+	} else {
+		fleet.Spec.ObjectStorage.Endpoint = opts.endpoint
+		fleet.Spec.ObjectStorage.Region = opts.region
+		if opts.secret != "" {
+			fleet.Spec.ObjectStorage.CredentialsSecretRef = &corev1.LocalObjectReference{Name: opts.secret}
+		}
+		fleet.Spec.ObjectStorage.AllowHTTP = opts.allowHTTP
+	}
+	if opts.hostname != "" {
+		ingress := &platformv1alpha1.IngressSpec{
+			Hostname:    opts.hostname,
+			Path:        opts.path,
+			StripPrefix: &opts.stripPrefix,
+		}
+		if opts.ingressClass != "" {
+			ingress.IngressClass = opts.ingressClass
+		}
+		if opts.gateway != "" {
+			ref := platformv1alpha1.GatewayRef{Name: opts.gateway}
+			if opts.gatewayNS != "" {
+				ref.Namespace = opts.gatewayNS
+			}
+			ingress.GatewayRefs = []platformv1alpha1.GatewayRef{ref}
+		}
+		if opts.clusterIssuer != "" || opts.tlsSecret != "" {
+			ingress.TLS = &platformv1alpha1.IngressTLS{
+				CertificateSecretRef: nil,
+				ClusterIssuer:        opts.clusterIssuer,
+			}
+			if opts.tlsSecret != "" {
+				ingress.TLS.CertificateSecretRef = &opts.tlsSecret
+			}
+		}
+		fleet.Spec.Ingress = ingress
+	}
+
+	encoded, err := yaml.Marshal(fleet)
+	if err != nil {
+		return err
+	}
+	fmt.Println("# generated by kubectl celld init")
+	fmt.Print(string(encoded))
+
+	if opts.apply {
+		c, err := newClient()
+		if err != nil {
+			return err
+		}
+		if err := c.Create(ctx, fleet); err != nil {
+			return fmt.Errorf("apply fleet: %w", err)
+		}
+		fmt.Printf("\nFleet %s/%s created.\n", namespace, name)
+		if fleet.Spec.Ingress != nil {
+			fmt.Printf("The operator will create the route; check with: kubectl celld status %s -n %s\n", name, namespace)
+		}
+	}
+	return nil
+}

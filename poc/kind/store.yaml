@@ -1,0 +1,14 @@
+# Shared S3-compatible storage backend for the POC fleets. The MinIO
+# connection is defined once here; each fleet references it with
+# spec.storeRef and contributes only its own bucket prefix.
+apiVersion: platform.celld.dev/v1alpha1
+kind: CelldObjectStore
+metadata:
+  name: minio
+  namespace: celld-poc
+spec:
+  endpoint: http://minio.celld-poc.svc:9000
+  region: us-east-1
+  allowHTTP: true
+  credentialsSecretRef:
+    name: celld-s3-credentials

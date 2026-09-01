@@ -24,6 +24,9 @@ spec:
     - jsonPath: .spec.objectStorage.bucket
       name: Bucket
       type: string
+    - jsonPath: .status.url
+      name: URL
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -56,6 +59,92 @@ spec:
                 default: ghcr.io/denoland/celld:v0.4.0
                 description: Image is the celld runtime image.
                 type: string
+              ingress:
+                description: |-
+                  Ingress optionally configures automatic external exposure of the public
+                  Worker Service through a classic Ingress or a Gateway API HTTPRoute.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations are merged into the created route's metadata.
+                    type: object
+                  gatewayRefs:
+                    description: |-
+                      GatewayRefs attaches the fleet to one or more existing Gateways by
+                      namespace/name. Set this to use Gateway API HTTPRoutes instead of
+                      classic Ingress. Exactly one of ingressClass and gatewayRefs must be set.
+                    items:
+                      description: |-
+                        GatewayRef names a Gateway in the same namespace as the CelldFleet unless
+                        Namespace is set.
+                      properties:
+                        name:
+                          minLength: 1
+                          type: string
+                        namespace:
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  hostname:
+                    description: |-
+                      Hostname is the fully qualified public hostname for this fleet, for
+                      example demo.example.com. It is used for Ingress rules and HTTPRoute
+                      hostnames, and for the https:// URL reported in status.
+                    minLength: 1
+                    type: string
+                  ingressClass:
+                    description: |-
+                      IngressClass is the spec.ingressClassName of the created Ingress. Set
+                      this to use classic Ingress (nginx, traefik, kong, ...). Exactly one of
+                      ingressClass and gatewayRefs must be set.
+                    type: string
+                  path:
+                    default: /
+                    description: Path is an optional path prefix routed to the fleet.
+                      Defaults to "/".
+                    pattern: ^/.*
+                    type: string
+                  pathType:
+                    default: Prefix
+                    description: PathType for the Ingress rule. Defaults to Prefix.
+                    enum:
+                    - Exact
+                    - Prefix
+                    - ImplementationSpecific
+                    type: string
+                  stripPrefix:
+                    description: |-
+                      StripPrefix removes the Path prefix from the request before it reaches
+                      the Worker. This lets one hostname serve multiple fleets, each mounted
+                      at its own subpath: a request to /api/hello with Path=/api and
+                      StripPrefix=true reaches the Worker as /hello. It is implemented with
+                      the nginx rewrite annotation for Ingress, and URL rewrite filters for
+                      Gateway API HTTPRoutes. Defaults to false.
+                    type: boolean
+                  tls:
+                    description: TLS configures certificate termination for the created
+                      route.
+                    properties:
+                      certificateSecretRef:
+                        description: |-
+                          CertificateSecretRef references an existing TLS Secret. For classic
+                          Ingress it is used directly. For HTTPRoute it becomes a
+                          GatewayTLSConfig reference.
+                        type: string
+                      clusterIssuer:
+                        description: |-
+                          ClusterIssuer requests a certificate with cert-manager. The operator
+                          annotates the route (cert-manager.io/cluster-issuer) so cert-manager
+                          creates the companion Certificate/Secret for the hostname.
+                        type: string
+                    type: object
+                required:
+                - hostname
+                type: object
               localStorage:
                 properties:
                   size:
@@ -77,8 +166,9 @@ spec:
               objectStorage:
                 properties:
                   allowHTTP:
-                    description: AllowHTTP permits a plain-HTTP S3-compatible endpoint.
-                      Use only for local development.
+                    description: |-
+                      AllowHTTP permits a plain-HTTP S3-compatible endpoint. Use only for local development.
+                      Leave false when spec.storeRef is set; the store provides the setting.
                     type: boolean
                   bucket:
                     description: Bucket is an s3:// bucket with an optional prefix.
@@ -89,6 +179,7 @@ spec:
                     description: |-
                       CredentialsSecretRef names a Secret whose keys are injected as environment variables.
                       Common keys are AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN.
+                      Leave empty when spec.storeRef is set; the store provides the secret.
                     properties:
                       name:
                         default: ""
@@ -102,12 +193,16 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   endpoint:
-                    description: Endpoint configures an S3-compatible service such
-                      as R2 or MinIO.
+                    description: |-
+                      Endpoint configures an S3-compatible service such as R2 or MinIO.
+                      Leave empty when spec.storeRef is set; the store provides the endpoint.
                     type: string
                   region:
-                    default: us-east-1
-                    description: Region defaults to us-east-1.
+                    description: |-
+                      Region defaults to us-east-1. Leave empty when spec.storeRef is set;
+                      the store provides the region. The default is applied at resolution
+                      time rather than by the API server, so fleets using storeRef can keep
+                      objectStorage free of connection fields.
                     type: string
                 required:
                 - bucket
@@ -190,6 +285,25 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
+              storeRef:
+                description: |-
+                  StoreRef references a CelldObjectStore that provides the shared
+                  connection configuration (endpoint, region, credentials, allowHTTP) for
+                  this fleet's object storage. When set, objectStorage.bucket is still
+                  required, but objectStorage connection fields (endpoint, region,
+                  allowHTTP, credentialsSecretRef) must be empty — they come from the store.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
             required:
             - objectStorage
             type: object
@@ -258,6 +372,11 @@ spec:
                 format: int32
                 type: integer
               serviceName:
+                type: string
+              url:
+                description: |-
+                  URL reports the public entry point when ingress is configured, for
+                  example https://demo.example.com.
                 type: string
             type: object
         type: object

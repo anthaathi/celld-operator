@@ -3,25 +3,29 @@ package controller
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"reflect"
 	"strings"
 
 	platformv1alpha1 "github.com/anthaathi/celld-deploy/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 const (
@@ -38,9 +42,12 @@ type CelldFleetReconciler struct {
 // +kubebuilder:rbac:groups=platform.celld.dev,resources=celldfleets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=platform.celld.dev,resources=celldfleets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=platform.celld.dev,resources=celldfleets/finalizers,verbs=update
+// +kubebuilder:rbac:groups=platform.celld.dev,resources=celldobjectstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 
 func (r *CelldFleetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var fleet platformv1alpha1.CelldFleet
@@ -52,10 +59,19 @@ func (r *CelldFleetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, r.setCondition(ctx, &fleet, metav1.ConditionFalse, "InvalidConfiguration", err.Error())
 	}
 
+	storage, err := resolveFleetStorage(ctx, r.Client, &fleet)
+	if err != nil {
+		return ctrl.Result{Requeue: true}, r.setCondition(ctx, &fleet, metav1.ConditionFalse, "InvalidConfiguration", err.Error())
+	}
+
 	resources := []client.Object{
 		BuildPeerService(&fleet),
 		BuildPublicService(&fleet),
-		BuildStatefulSet(&fleet),
+		BuildStatefulSet(&fleet, storage),
+	}
+	// Ingress/HTTPRoute are optional; build only when spec.ingress is set.
+	for _, object := range BuildRoutes(&fleet) {
+		resources = append(resources, object)
 	}
 	for _, object := range resources {
 		if err := controllerutil.SetControllerReference(&fleet, object, r.Scheme); err != nil {
@@ -80,6 +96,7 @@ func (r *CelldFleetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	fleet.Status.ObservedGeneration = fleet.Generation
 	fleet.Status.ReadyReplicas = statefulSet.Status.ReadyReplicas
 	fleet.Status.ServiceName = fleet.Name
+	fleet.Status.URL = publicURL(&fleet)
 	apiMeta.SetStatusCondition(&fleet.Status.Conditions, metav1.Condition{
 		Type: "Ready", Status: status, Reason: reason, Message: message,
 		ObservedGeneration: fleet.Generation,
@@ -133,9 +150,26 @@ func managedStateMatches(desired, current client.Object) bool {
 		return apiequality.Semantic.DeepDerivative(wanted.Spec, current.(*corev1.Service).Spec)
 	case *appsv1.StatefulSet:
 		return apiequality.Semantic.DeepDerivative(wanted.Spec, current.(*appsv1.StatefulSet).Spec)
+	case *networkingv1.Ingress:
+		return apiequality.Semantic.DeepDerivative(wanted.Spec, current.(*networkingv1.Ingress).Spec) &&
+			annotationsMatch(wanted.Annotations, current.(*networkingv1.Ingress).Annotations)
+	case *gatewayv1.HTTPRoute:
+		return apiequality.Semantic.DeepDerivative(wanted.Spec, current.(*gatewayv1.HTTPRoute).Spec) &&
+			annotationsMatch(wanted.Annotations, current.(*gatewayv1.HTTPRoute).Annotations)
 	default:
 		return false
 	}
+}
+
+// annotationsMatch compares only the annotations the operator manages. Any
+// annotations added by users or controllers (e.g. cert-manager) are preserved.
+func annotationsMatch(desired, current map[string]string) bool {
+	for key, value := range desired {
+		if current[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *CelldFleetReconciler) setCondition(ctx context.Context, fleet *platformv1alpha1.CelldFleet, status metav1.ConditionStatus, reason, message string) error {
@@ -151,12 +185,53 @@ func (r *CelldFleetReconciler) setCondition(ctx context.Context, fleet *platform
 }
 
 func (r *CelldFleetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&platformv1alpha1.CelldFleet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
-		Named("celldfleet").
-		Complete(r)
+		Owns(&networkingv1.Ingress{}).
+		// Re-reconcile fleets when a referenced CelldObjectStore changes, so
+		// endpoint/credential rotations reach the StatefulSets.
+		Watches(&platformv1alpha1.CelldObjectStore{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, store client.Object) []reconcile.Request {
+			var fleets platformv1alpha1.CelldFleetList
+			if err := r.List(ctx, &fleets, client.InNamespace(store.GetNamespace())); err != nil {
+				return nil
+			}
+			requests := []reconcile.Request{}
+			for _, fleet := range fleets.Items {
+				if fleet.Spec.StoreRef != nil && fleet.Spec.StoreRef.Name == store.GetName() {
+					requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: fleet.Namespace, Name: fleet.Name}})
+				}
+			}
+			return requests
+		}))
+	// HTTPRoute watches require the Gateway API CRDs. Watching on a cluster
+	// without them blocks the controller start, so register the watch only
+	// when the CRD is actually served.
+	if gatewayAPIInstalled(mgr) {
+		builder = builder.Owns(&gatewayv1.HTTPRoute{})
+	}
+	return builder.Named("celldfleet").Complete(r)
+}
+
+// resolveFleetStorage resolves the fleet's effective storage configuration,
+// returning a wrapped error that names the missing store when applicable.
+func resolveFleetStorage(ctx context.Context, c client.Client, fleet *platformv1alpha1.CelldFleet) (*platformv1alpha1.StorageConfig, error) {
+	return fleet.ResolveStorage(func(name string) (*platformv1alpha1.CelldObjectStore, error) {
+		store := &platformv1alpha1.CelldObjectStore{}
+		if err := c.Get(ctx, types.NamespacedName{Namespace: fleet.Namespace, Name: name}, store); err != nil {
+			return nil, fmt.Errorf("store %q not found: %w", name, err)
+		}
+		return store, nil
+	})
+}
+
+// gatewayAPIInstalled reports whether the gateway.networking.k8s.io/v1
+// HTTPRoute kind is served by the cluster.
+func gatewayAPIInstalled(mgr ctrl.Manager) bool {
+	_, err := mgr.GetRESTMapper().RESTMapping(
+		schema.GroupKind{Group: "gateway.networking.k8s.io", Kind: "HTTPRoute"}, "v1")
+	return err == nil
 }
 
 func validateFleet(fleet *platformv1alpha1.CelldFleet) error {
@@ -166,14 +241,8 @@ func validateFleet(fleet *platformv1alpha1.CelldFleet) error {
 	if !strings.HasPrefix(fleet.Spec.ObjectStorage.Bucket, "s3://") {
 		return fmt.Errorf("objectStorage.bucket must start with s3://")
 	}
-	if fleet.Spec.ObjectStorage.Endpoint != "" {
-		endpoint, err := url.Parse(fleet.Spec.ObjectStorage.Endpoint)
-		if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
-			return fmt.Errorf("objectStorage.endpoint must be an absolute HTTP(S) URL")
-		}
-		if endpoint.Scheme == "http" && !fleet.Spec.ObjectStorage.AllowHTTP {
-			return fmt.Errorf("objectStorage.allowHTTP must be true for an http endpoint")
-		}
+	if err := fleet.ValidateStorage(); err != nil {
+		return err
 	}
 	storageType := fleet.Spec.LocalStorage.Type
 	if storageType != "" && storageType != platformv1alpha1.StorageEphemeral && storageType != platformv1alpha1.StoragePersistent {
@@ -184,7 +253,7 @@ func validateFleet(fleet *platformv1alpha1.CelldFleet) error {
 			return fmt.Errorf("localStorage.size is invalid: %w", err)
 		}
 	}
-	return nil
+	return validateIngress(fleet)
 }
 
 func labelsFor(fleet *platformv1alpha1.CelldFleet) map[string]string {
@@ -207,13 +276,6 @@ func image(fleet *platformv1alpha1.CelldFleet) string {
 		return platformv1alpha1.DefaultCelldImage
 	}
 	return fleet.Spec.Image
-}
-
-func region(fleet *platformv1alpha1.CelldFleet) string {
-	if fleet.Spec.ObjectStorage.Region == "" {
-		return "us-east-1"
-	}
-	return fleet.Spec.ObjectStorage.Region
 }
 
 func storageType(fleet *platformv1alpha1.CelldFleet) string {
@@ -257,30 +319,30 @@ func BuildPublicService(fleet *platformv1alpha1.CelldFleet) *corev1.Service {
 	}
 }
 
-func BuildStatefulSet(fleet *platformv1alpha1.CelldFleet) *appsv1.StatefulSet {
+func BuildStatefulSet(fleet *platformv1alpha1.CelldFleet, storage *platformv1alpha1.StorageConfig) *appsv1.StatefulSet {
 	labels := labelsFor(fleet)
 	env := []corev1.EnvVar{
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
-		{Name: "CELLD_BUCKET", Value: fleet.Spec.ObjectStorage.Bucket},
-		{Name: "AWS_REGION", Value: region(fleet)},
+		{Name: "CELLD_BUCKET", Value: storage.Bucket},
+		{Name: "AWS_REGION", Value: storage.Region},
 		{Name: "CELLD_ADDR", Value: fmt.Sprintf("0.0.0.0:%d", publicPort)},
 		{Name: "CELLD_INTERNAL_ADDR", Value: fmt.Sprintf("0.0.0.0:%d", internalPort)},
 		{Name: "CELLD_ADVERTISE", Value: fmt.Sprintf("$(POD_NAME).%s-peer.$(POD_NAMESPACE).svc:%d", fleet.Name, internalPort)},
 		{Name: "CELLD_WATCH", Value: watchPath},
 	}
-	if fleet.Spec.ObjectStorage.Endpoint != "" {
-		env = append(env, corev1.EnvVar{Name: "S3_ENDPOINT", Value: fleet.Spec.ObjectStorage.Endpoint})
+	if storage.Endpoint != "" {
+		env = append(env, corev1.EnvVar{Name: "S3_ENDPOINT", Value: storage.Endpoint})
 	}
-	if fleet.Spec.ObjectStorage.AllowHTTP {
+	if storage.AllowHTTP {
 		env = append(env,
 			corev1.EnvVar{Name: "AWS_ALLOW_HTTP", Value: "true"},
 			corev1.EnvVar{Name: "AWS_S3_FORCE_PATH_STYLE", Value: "true"},
 		)
 	}
 	envFrom := []corev1.EnvFromSource{}
-	if ref := fleet.Spec.ObjectStorage.CredentialsSecretRef; ref != nil {
-		envFrom = append(envFrom, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: *ref}})
+	if storage.SecretName != "" {
+		envFrom = append(envFrom, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: storage.SecretName}}})
 	}
 	probe := &corev1.Probe{
 		ProbeHandler:        corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/.well-known/celld/health", Port: intstr.FromInt(publicPort)}},
@@ -321,4 +383,258 @@ func BuildStatefulSet(fleet *platformv1alpha1.CelldFleet) *appsv1.StatefulSet {
 		statefulSet.Spec.Template.Spec.Volumes = []corev1.Volume{{Name: "state", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 	}
 	return statefulSet
+}
+
+// BuildRoutes returns the external-exposure objects for the fleet: either an
+// Ingress (spec.ingress.ingressClass) or an HTTPRoute (spec.ingress.gatewayRefs),
+// or nothing when spec.ingress is unset.
+func BuildRoutes(fleet *platformv1alpha1.CelldFleet) []client.Object {
+	ingress := fleet.Spec.Ingress
+	if ingress == nil {
+		return nil
+	}
+	var routes []client.Object
+	if ingress.IngressClass != "" {
+		routes = append(routes, BuildIngress(fleet))
+	}
+	if len(ingress.GatewayRefs) > 0 {
+		routes = append(routes, BuildHTTPRoute(fleet))
+	}
+	return routes
+}
+
+// ingressPath returns the configured path with a sane default.
+func ingressPath(ingress *platformv1alpha1.IngressSpec) string {
+	if ingress.Path == "" {
+		return "/"
+	}
+	return ingress.Path
+}
+
+// ingressPathType returns the configured path type with a sane default.
+func ingressPathType(ingress *platformv1alpha1.IngressSpec) networkingv1.PathType {
+	if ingress.PathType == "" {
+		return networkingv1.PathTypePrefix
+	}
+	return ingress.PathType
+}
+
+// routeAnnotations merges user annotations with controller-managed ones
+// (cert-manager issuer, nginx prefix rewrite).
+func routeAnnotations(ingress *platformv1alpha1.IngressSpec) map[string]string {
+	var annotations map[string]string
+	if ingress.TLS != nil && ingress.TLS.ClusterIssuer != "" {
+		annotations = map[string]string{
+			"cert-manager.io/cluster-issuer": ingress.TLS.ClusterIssuer,
+		}
+	}
+	if strip, path := ingress.StripPrefix != nil && *ingress.StripPrefix, ingressPath(ingress); strip && path != "/" {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		// nginx ingress: strip the matched prefix before proxying upstream.
+		annotations["nginx.ingress.kubernetes.io/rewrite-target"] = "/$2"
+		annotations["nginx.ingress.kubernetes.io/use-regex"] = "true"
+	}
+	for key, value := range ingress.Annotations {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[key] = value
+	}
+	return annotations
+}
+
+// routeTLSHosts returns the TLS host entry when TLS is explicitly configured.
+func routeTLSHosts(fleet *platformv1alpha1.CelldFleet, ingress *platformv1alpha1.IngressSpec) []networkingv1.IngressTLS {
+	if ingress.TLS == nil {
+		return nil
+	}
+	if ingress.TLS.CertificateSecretRef == nil && ingress.TLS.ClusterIssuer == "" {
+		return nil
+	}
+	secretName := ""
+	if ingress.TLS.CertificateSecretRef != nil {
+		secretName = *ingress.TLS.CertificateSecretRef
+	} else {
+		// cert-manager fills the Secret named after the fleet hostname.
+		secretName = fleet.Name + "-tls"
+	}
+	return []networkingv1.IngressTLS{{Hosts: []string{ingress.Hostname}, SecretName: secretName}}
+}
+
+// BuildIngress creates the classic Ingress routing hostname(+path) to the
+// public Service. TLS is either an existing Secret or cert-managed.
+func BuildIngress(fleet *platformv1alpha1.CelldFleet) *networkingv1.Ingress {
+	ingress := fleet.Spec.Ingress
+	pathType := ingressPathType(ingress)
+	path := ingressPath(ingress)
+	// Prefix stripping on nginx is implemented with a regex capture and
+	// rewrite-target /$2 (see routeAnnotations), which requires the
+	// ImplementationSpecific path type.
+	if stripsPrefix(ingress) && path != "/" {
+		pathType = networkingv1.PathTypeImplementationSpecific
+		path = path + "(/|$)(.*)"
+	}
+	return &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fleet.Name, Namespace: fleet.Namespace, Labels: labelsFor(fleet),
+			Annotations: routeAnnotations(ingress),
+		},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &ingress.IngressClass,
+			TLS:              routeTLSHosts(fleet, ingress),
+			Rules: []networkingv1.IngressRule{{
+				Host: ingress.Hostname,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{{
+							Path:     path,
+							PathType: &pathType,
+							Backend: networkingv1.IngressBackend{
+								Service: &networkingv1.IngressServiceBackend{
+									Name: fleet.Name,
+									Port: networkingv1.ServiceBackendPort{Name: "http"},
+								},
+							},
+						}},
+					},
+				},
+			}},
+		},
+	}
+}
+
+// stripsPrefix reports whether the route should strip the configured path
+// prefix before the request reaches the Worker.
+func stripsPrefix(ingress *platformv1alpha1.IngressSpec) bool {
+	return ingress.StripPrefix != nil && *ingress.StripPrefix
+}
+
+// BuildHTTPRoute creates a Gateway API HTTPRoute attaching the fleet to the
+// configured Gateways. TLS with an existing Secret becomes a
+// GatewayTLSConfig; cert-manager is handled through annotations on the
+// Gateway or a companion Certificate the user creates.
+func BuildHTTPRoute(fleet *platformv1alpha1.CelldFleet) *gatewayv1.HTTPRoute {
+	ingress := fleet.Spec.Ingress
+	parentRefs := make([]gatewayv1.ParentReference, 0, len(ingress.GatewayRefs))
+	for _, ref := range ingress.GatewayRefs {
+		parentRef := gatewayv1.ParentReference{
+			Name:        gatewayv1.ObjectName(ref.Name),
+			SectionName: nil,
+		}
+		if ref.Namespace != "" {
+			ns := gatewayv1.Namespace(ref.Namespace)
+			parentRef.Namespace = &ns
+		}
+		// Default group/kind to Gateway, as required by the Gateway API spec.
+		group := gatewayv1.Group("gateway.networking.k8s.io")
+		kind := gatewayv1.Kind("Gateway")
+		parentRef.Group = &group
+		parentRef.Kind = &kind
+		parentRefs = append(parentRefs, parentRef)
+	}
+	// Note: TLS termination for HTTPRoute is configured on the Gateway
+	// listener, not the route. cert-manager flows through the annotations
+	// below; an existing Secret should be referenced by the Gateway listener.
+	//
+	// Prefix stripping is implemented with the standard URL Rewrite filter,
+	// which every conformant Gateway implementation must support.
+	rule := gatewayv1.HTTPRouteRule{
+		Matches: []gatewayv1.HTTPRouteMatch{
+			{Path: &gatewayv1.HTTPPathMatch{Type: pathMatchType(ingress), Value: ptr.To(ingressPath(ingress))}},
+		},
+		BackendRefs: []gatewayv1.HTTPBackendRef{
+			{BackendRef: gatewayv1.BackendRef{
+				BackendObjectReference: gatewayv1.BackendObjectReference{
+					Name: gatewayv1.ObjectName(fleet.Name),
+					Port: ptr.To(gatewayv1.PortNumber(80)),
+				},
+				Weight: ptr.To(int32(100)),
+			}},
+		},
+	}
+	if stripsPrefix(ingress) && ingressPath(ingress) != "/" {
+		rule.Filters = []gatewayv1.HTTPRouteFilter{{
+			Type: gatewayv1.HTTPRouteFilterURLRewrite,
+			URLRewrite: &gatewayv1.HTTPURLRewriteFilter{
+				Path: &gatewayv1.HTTPPathModifier{
+					Type:               gatewayv1.PrefixMatchHTTPPathModifier,
+					ReplacePrefixMatch: ptr.To("/"),
+				},
+			},
+		}}
+	}
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fleet.Name, Namespace: fleet.Namespace, Labels: labelsFor(fleet),
+			Annotations: routeAnnotations(ingress),
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefs},
+			Hostnames:       []gatewayv1.Hostname{gatewayv1.Hostname(ingress.Hostname)},
+			Rules: []gatewayv1.HTTPRouteRule{rule},
+		},
+	}
+}
+
+// pathMatchType maps the Ingress-style path type to Gateway API enums.
+func pathMatchType(ingress *platformv1alpha1.IngressSpec) *gatewayv1.PathMatchType {
+	pathType := ingressPathType(ingress)
+	var matchType gatewayv1.PathMatchType
+	switch pathType {
+	case networkingv1.PathTypeExact:
+		matchType = gatewayv1.PathMatchExact
+	case networkingv1.PathTypeImplementationSpecific:
+		matchType = gatewayv1.PathMatchRegularExpression
+	default:
+		matchType = gatewayv1.PathMatchPathPrefix
+	}
+	return &matchType
+}
+
+// publicURL reports the fleet's public https URL when ingress is configured.
+func publicURL(fleet *platformv1alpha1.CelldFleet) string {
+	if fleet.Spec.Ingress == nil || fleet.Spec.Ingress.Hostname == "" {
+		return ""
+	}
+	scheme := "http"
+	if fleet.Spec.Ingress.TLS != nil &&
+		(fleet.Spec.Ingress.TLS.CertificateSecretRef != nil || fleet.Spec.Ingress.TLS.ClusterIssuer != "") {
+		scheme = "https"
+	}
+	path := strings.TrimSuffix(ingressPath(fleet.Spec.Ingress), "/")
+	return fmt.Sprintf("%s://%s%s", scheme, fleet.Spec.Ingress.Hostname, path)
+}
+
+// validateIngress validates the ingress section of the fleet spec.
+func validateIngress(fleet *platformv1alpha1.CelldFleet) error {
+	ingress := fleet.Spec.Ingress
+	if ingress == nil {
+		return nil
+	}
+	if ingress.Hostname == "" {
+		return fmt.Errorf("ingress.hostname is required when ingress is configured")
+	}
+	if ingress.IngressClass == "" && len(ingress.GatewayRefs) == 0 {
+		return fmt.Errorf("either ingress.ingressClass or ingress.gatewayRefs must be set")
+	}
+	if ingress.IngressClass != "" && len(ingress.GatewayRefs) > 0 {
+		return fmt.Errorf("ingress.ingressClass and ingress.gatewayRefs are mutually exclusive")
+	}
+	if tls := ingress.TLS; tls != nil {
+		if tls.CertificateSecretRef == nil && tls.ClusterIssuer == "" {
+			return fmt.Errorf("ingress.tls requires either certificateSecretRef or clusterIssuer")
+		}
+		if tls.CertificateSecretRef != nil && tls.ClusterIssuer != "" {
+			return fmt.Errorf("ingress.tls.certificateSecretRef and clusterIssuer are mutually exclusive")
+		}
+	}
+	if stripsPrefix(ingress) && ingress.Path == "" {
+		return fmt.Errorf("ingress.stripPrefix requires an explicit ingress.path")
+	}
+	if stripsPrefix(ingress) && ingress.Path == "/" {
+		return fmt.Errorf("ingress.stripPrefix with path \"/\" would strip everything; use a subpath like \"/api\"")
+	}
+	return nil
 }

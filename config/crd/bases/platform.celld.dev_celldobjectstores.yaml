@@ -1,0 +1,98 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: celldobjectstores.platform.celld.dev
+spec:
+  group: platform.celld.dev
+  names:
+    kind: CelldObjectStore
+    listKind: CelldObjectStoreList
+    plural: celldobjectstores
+    singular: celldobjectstore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.endpoint
+      name: Endpoint
+      type: string
+    - jsonPath: .spec.region
+      name: Region
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CelldObjectStore describes one S3-compatible storage backend shared by many
+              CelldFleets. Define the endpoint, region, and credentials once and reference
+              the store from each fleet with spec.storeRef, keeping only the bucket prefix
+              on the fleet.
+            properties:
+              allowHTTP:
+                description: |-
+                  AllowHTTP permits a plain-HTTP S3-compatible endpoint. Use only for
+                  local development.
+                type: boolean
+              credentialsSecretRef:
+                description: |-
+                  CredentialsSecretRef names a Secret whose keys are injected as
+                  environment variables on the celld nodes and deploy Jobs. Common keys
+                  are AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              endpoint:
+                description: |-
+                  Endpoint configures an S3-compatible service such as AWS S3, Cloudflare
+                  R2, or MinIO. Leave empty for AWS S3 itself.
+                type: string
+              region:
+                description: Region defaults to us-east-1.
+                type: string
+            type: object
+          status:
+            properties:
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

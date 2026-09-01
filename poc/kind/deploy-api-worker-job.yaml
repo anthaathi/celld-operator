@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: deploy-celld-api-worker
+  namespace: celld-poc
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: deploy
+        image: celld-deployer:poc
+        imagePullPolicy: IfNotPresent
+        args:
+        - deploy
+        - /app
+        - --bucket
+        - s3://celld/local-poc-api
+        - --endpoint
+        - http://minio.celld-poc.svc:9000
+        - --region
+        - us-east-1
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: celld-s3-credentials
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: celld-s3-credentials
+              key: AWS_SECRET_ACCESS_KEY
+        - name: AWS_ALLOW_HTTP
+          value: "true"
+        - name: AWS_S3_FORCE_PATH_STYLE
+          value: "true"

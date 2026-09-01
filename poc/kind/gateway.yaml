@@ -1,0 +1,35 @@
+# Gateway API demo: one Envoy Gateway serving celld fleets through HTTPRoutes.
+#
+# Requires Envoy Gateway and the Gateway API CRDs:
+#   kubectl apply --server-side -f https://github.com/envoyproxy/gateway/releases/download/v1.5.0/install.yaml
+#
+# The operator creates the HTTPRoute for each fleet with spec.ingress.gatewayRefs;
+# this Gateway is the attach point. The GatewayClass is defined below because the
+# v1.5.0 install manifest ships without one, and without it Envoy logs
+# "failed to get GatewayClass envoy" and never provisions the data plane.
+#
+# kind does not provision LoadBalancer services, so reach the gateway through a
+# port-forward once the data-plane service appears (named envoy-celld-poc-celld-<hash>):
+#   kubectl -n envoy-gateway-system port-forward svc/envoy-celld-poc-celld-<hash> 8080:80
+#   curl -H 'Host: gw.celld.dev' http://127.0.0.1:8080/hello
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: celld
+  namespace: celld-poc
+spec:
+  gatewayClassName: envoy
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: Same

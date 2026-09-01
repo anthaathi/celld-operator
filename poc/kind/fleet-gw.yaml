@@ -1,7 +1,9 @@
+# Fleet exposed through Gateway API instead of classic Ingress:
+# the operator creates an HTTPRoute attached to the "celld" Gateway.
 apiVersion: platform.celld.dev/v1alpha1
 kind: CelldFleet
 metadata:
-  name: local
+  name: local-gw
   namespace: celld-poc
 spec:
   replicas: 1
@@ -9,14 +11,15 @@ spec:
   storeRef:
     name: minio
   objectStorage:
-    bucket: s3://celld/local-poc
+    bucket: s3://celld/local-poc-gw
   localStorage:
     type: Ephemeral
   service:
     type: ClusterIP
   ingress:
-    hostname: local.celld.dev
-    ingressClass: nginx
+    hostname: gw.celld.dev
+    gatewayRefs:
+    - name: celld
   resources:
     requests:
       cpu: 100m

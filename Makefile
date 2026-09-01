@@ -1,11 +1,17 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: all build test vet verify manifests install uninstall poc-up poc-deploy poc-down
+.PHONY: all build test vet verify manifests install uninstall plugin deployer-image poc-up poc-deploy poc-down
 
 all: verify
 
 build:
 	go build -o bin/celld-operator ./cmd
+
+plugin:
+	go build -o bin/kubectl-celld ./cmd/kubectl-celld
+
+deployer-image:
+	docker build -f deployer.Dockerfile -t celld-deployer:latest .
 
 test:
 	go test ./...

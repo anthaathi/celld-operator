@@ -1,7 +1,10 @@
+# Second fleet mounted on a subpath of the same hostname as the "local" fleet.
+# stripPrefix removes /api before the request reaches this fleet's Worker, so
+# a request to /api/hello is served by the /hello handler below.
 apiVersion: platform.celld.dev/v1alpha1
 kind: CelldFleet
 metadata:
-  name: local
+  name: local-api
   namespace: celld-poc
 spec:
   replicas: 1
@@ -9,7 +12,7 @@ spec:
   storeRef:
     name: minio
   objectStorage:
-    bucket: s3://celld/local-poc
+    bucket: s3://celld/local-poc-api
   localStorage:
     type: Ephemeral
   service:
@@ -17,6 +20,8 @@ spec:
   ingress:
     hostname: local.celld.dev
     ingressClass: nginx
+    path: /api
+    stripPrefix: true
   resources:
     requests:
       cpu: 100m

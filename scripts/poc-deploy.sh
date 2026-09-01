@@ -12,4 +12,8 @@ kubectl -n celld-poc delete job deploy-celld-worker --ignore-not-found
 kubectl apply -f "$ROOT/poc/kind/deploy-worker-job.yaml"
 kubectl -n celld-poc wait --for=condition=complete job/deploy-celld-worker --timeout=120s
 
-echo "Worker uploaded. celld nodes will adopt it within 30 seconds."
+kubectl -n celld-poc delete job deploy-celld-api-worker --ignore-not-found
+kubectl apply -f "$ROOT/poc/kind/deploy-api-worker-job.yaml"
+kubectl -n celld-poc wait --for=condition=complete job/deploy-celld-api-worker --timeout=120s
+
+echo "Workers uploaded. celld nodes will adopt them within 30 seconds."
