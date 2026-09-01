@@ -75,7 +75,18 @@ done
 }
 
 POD=$(kubectl -n celld-poc get pod -l app.kubernetes.io/instance=e2e -o jsonpath='{.items[0].metadata.name}')
-BODY=$(kubectl -n celld-poc exec "$POD" -- curl -s http://127.0.0.1:8080/hello)
+# The celld node image ships no curl/wget: port-forward and probe from the host.
+PROBE_PORT=18080
+kubectl -n celld-poc port-forward pod/"$POD" "${PROBE_PORT}:8080" >/dev/null 2>&1 &
+PF_PID=$!
+trap 'kill "$PF_PID" 2>/dev/null || true; cleanup' EXIT
+BODY=""
+for _ in $(seq 1 20); do
+  if BODY=$(curl -fsS "http://127.0.0.1:${PROBE_PORT}/hello" 2>/dev/null); then break; fi
+  sleep 2
+done
+kill "$PF_PID" 2>/dev/null || true
+trap cleanup EXIT
 echo "worker response: $BODY"
 echo "$BODY" | grep -q "hello from a locally deployed multi-file Worker" || {
   echo "unexpected worker response" >&2
