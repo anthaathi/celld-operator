@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/anthaathi/celld-operator/compare/v1.0.0...v1.0.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ci:** attach release assets by explicit release ID via gh api ([e95a403](https://github.com/anthaathi/celld-operator/commit/e95a403a7331f984ffeebd0eda79957f1466798c))
+* **ci:** build release assets from release-please via reusable workflow ([90b638e](https://github.com/anthaathi/celld-operator/commit/90b638e327d01cbf028329de5c82fb4161e65745))
+* **ci:** upload release assets to the release upload_url endpoint ([a4aa824](https://github.com/anthaathi/celld-operator/commit/a4aa824592503a919a347c365af809bac5ef006a))
+
 ## 1.0.0 (2026-09-01)
 
 
